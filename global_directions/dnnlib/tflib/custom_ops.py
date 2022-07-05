@@ -39,7 +39,7 @@ def _find_compiler_bindir():
     hostx64_paths = sorted(glob.glob('C:/Program Files (x86)/Microsoft Visual Studio/*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64'), reverse=True)
     if hostx64_paths != []:
         return hostx64_paths[0]
-    hostx64_paths = sorted(glob.glob('C:/Program Files (x86)/Microsoft Visual Studio/*/Community/VC/Tools/MSVC/*/bin/Hostx64/x64'), reverse=True)
+    hostx64_paths = sorted(glob.glob('C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.16.27023\bin\HostX64'), reverse=True)
     if hostx64_paths != []:
         return hostx64_paths[0]
     vc_bin_dir = 'C:/Program Files (x86)/Microsoft Visual Studio 14.0/vc/bin'
