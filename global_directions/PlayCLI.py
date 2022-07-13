@@ -1,5 +1,11 @@
-
-
+import clip
+import matplotlib
+import cv2
+import dlib
+import numpy as np
+import argparse
+import torch
+import torchvision.transforms as transforms
 
 from tkinter import Tk 
 from PIL import Image, ImageTk
@@ -7,14 +13,13 @@ from tkinter.filedialog import askopenfilename
 from GUI import View
 from Inference import StyleCLIP
 from manipulate import Manipulator
-import clip
 from MapTS import GetFs,GetBoundary,GetDt
-import matplotlib
-import cv2
-import argparse
-import torch
-import dlib
+from argparse import Namespace
+from encoder4editing.models.psp import pSp
 from utils.alignment import align_face
+
+
+
 #%%
 
 
@@ -24,29 +29,32 @@ class PlayCLI():  #Controller
     
     controller, model, view
     '''
-    def __init__(self,dataset_name='ffhq',origin_pic ="data/ffhq/0.jpg",result_pic ="result_0.jpg",alpha = 8,beta = 0.15, skip = True ):
+    def __init__(self,dataset_name='ffhq',origin_pic_address ="data/ffhq/0.jpg",alpha = 8,beta = 0.15, skip = True ):
         matplotlib.use('Agg')
-
         #prework
         self.dataset_name = dataset_name
-        self.origin_pic_address = "data/ffhq/0.jpg"
-        self.origin_pic = Image.open(origin_pic)
-        self.origin_pic = self.origin_pic.convert("RGB")
+        self.origin_pic_address = origin_pic_address
+        
         #베타값과 알파값 설정
         self.img_ratio=2
 
         print("Successfully Image Inputted: alpha : ",alpha ,"beta :",beta)
         self.manipulationStrength = alpha
         self.disentangleThreshold = beta
-        if skip : 
-            print("Skipped")
-        else :
-            self.buildLatent()
-            print("Unskipped")
+        self.origin_pic = Image.open(origin_pic_address)
+        self.origin_pic = self.origin_pic.convert("RGB")
 
 
-        self.style_clip=StyleCLIP(dataset_name)
-        #self.InvertImage()
+        if not skip :
+            #self.AlignImage(origin_pic_address)
+            self.BuildLatent()
+            self.style_clip=StyleCLIP(dataset_name)
+            self.GetGUIData()
+        else:
+            self.style_clip=StyleCLIP(dataset_name)
+
+            
+
         self.InputTextDescription()
         self.SetInit()
         #이부분을 루프 시켜서 중간에 계속해서 대입을 시켜 볼 수 있도록 만들것이다.
@@ -63,7 +71,7 @@ class PlayCLI():  #Controller
             keepChange = 'N'
             print("Need Change alpha and beta on this image? [y/N]:")
             keepChange = input()
-            if str(keepChange) =='N' or  str(keepChange) =='n' or str(keepChange) ==' ':
+            if str(keepChange) =='N' or  str(keepChange) =='n':
                 exit()
             elif str(keepChange) =='Y' or  str(keepChange) =='y':
                 #여기 안에 넣을만한 변수들로 수정하기.
@@ -72,6 +80,8 @@ class PlayCLI():  #Controller
                 print("Beta:")
                 self.disentangleThreshold = float(input())
                 self.LoopListOfPlay()
+            else : 
+                print("Error!: Retype query please!")
 
  
         self.drawn  = None
@@ -90,26 +100,58 @@ class PlayCLI():  #Controller
         img = Image.fromarray(img)
         img.save("alala.jpg")
 
-    def buildLatent(self) :
-        model_path = "e4e_ffhq_encode.pt"
+    def AlignImage(self, origin_pic_address):
+        print("Align Image")
+        predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
+        self.origin_pic = align_face(filepath=origin_pic_address, predictor=predictor) 
+  
+
+    def BuildLatent(self) :
+        print("Build latent : start")
+        EXPERIMENT_ARGS = {
+            "model_path": "e4e_ffhq_encode.pt"
+        }
+        model_path = EXPERIMENT_ARGS['model_path']
         ckpt = torch.load(model_path, map_location='cpu')
         opts = ckpt['opts']
+        opts['checkpoint_path'] = model_path
+        opts= Namespace(**opts)
         self.net = pSp(opts)
         self.net.eval()
         self.net.cuda()
-        predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
-        self.targetPic =align_face(filepath = self.origin_pic_address, predictor=predictor) 
-        print("Aligned image has shape: {}".format(aligned_image.size))
+        print("Build latent : net Set")
+
+        img_transforms = transforms.Compose(
+            [transforms.Resize((256, 256)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
+        resize_dims = (256, 256)       
+        transformed_image = img_transforms(self.origin_pic)
+        print("Build latent : Image Transformed")
+
+        inputs = transformed_image.unsqueeze(0)
         experiment_type = 'ffhq_encode'
         #위에 까지가 Align하는부분 아래부분이 이제 진짜 인버트 하는 부분
-        images, latents = net(inputs.to("cuda").float(), randomize_noise=False, return_latents=True)
-        torch.save(latents, 'data/ffhq/latents.pt')
+        self.origin_pic, self.latents = self.net(inputs.to("cuda").float(), randomize_noise=False, return_latents=True)
+        print("Build latent : latent processed")
 
+        torch.save(self.latents, 'data/ffhq/latents.pt')
+        self.w_plus=self.latents.cpu().detach().numpy()
+        np.save('./data/ffhq/w_plus.npy',self.w_plus)
+        #pt 가 생성되었으니 GUI data 그래대로 연결하는게 좋을듯.
 
     # latent, inverted image 만드는 곳.
-    def InvertImage(self):
-        # 드라이브 다운로드가 필요하며 동시에 다운로드한 다음의
-        # 스타일 클립 기반으로 어디인지 확인하기.
+    def GetGUIData(self):
+        # real 기반으로 일단 만들어봄
+        tmp=self.style_clip.M.W2S(self.w_plus)
+        self.style_clip.M.dlatents=tmp
+
+        self.style_clip.M.img_index=0
+        self.style_clip.M.num_images=len(self.w_plus)
+        self.style_clip.M.alpha=[0]
+        self.style_clip.M.step=1
+        lindex,bname=0,0
+    
 
         
 
@@ -199,23 +241,23 @@ class PlayCLI():  #Controller
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--dataset_name',type=str,default='ffhq',help='name of dataset, for example, ffhq')
-    parser.add_argument('--origin_pic',type=str,default='data/ffhq/0.jpg',help='Address of original image')
-    parser.add_argument('--result_pic',type=str,default='result_data.jpg',help='Address of result image')
+    parser.add_argument('--origin_pic_address',type=str,default='data/ffhq/0.jpg',help='Address of original image')
     parser.add_argument('--alpha',type=float,default=7.5,help='manipulation strength')
     parser.add_argument('--beta',type=float,default=0.15,help='disentangle threshold')
-    parser.add_argument('--skipInitialize',type=bool,default=True,help='disentangle threshold')
+    parser.add_argument('--skip',type=str,default='True',help='SkipLatent Or Other')
    
     args = parser.parse_args()
     dataset_name=args.dataset_name
-    origin_pic = args.origin_pic 
-    result_pic = args.result_pic 
+    origin_pic_address = args.origin_pic_address 
     alpha = args.alpha
     beta =args.beta
-    skip =arg.skipInitialize
+
+    skip = True
+    if(args.skip == 'False'):
+        skip = False
 
 
-
-    self=PlayCLI(dataset_name,origin_pic,result_pic,alpha,beta , skip)
+    self=PlayCLI(dataset_name,origin_pic_address,alpha,beta,skip)
     self.run()
 
 
